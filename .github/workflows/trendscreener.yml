@@ -1,7 +1,7 @@
 name: Trend Screener
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # Manueller Start-Button
 
 jobs:
   run-screener:
@@ -25,9 +25,10 @@ jobs:
         run: |
           cd ${{ github.workspace }}
           python trendscreener.py
+          echo "Dateien nach Python:"
           ls -la ${{ github.workspace }}
 
-          - name: Upload screener results
+      - name: Upload screener results
         uses: actions/upload-artifact@v4
         with:
           name: screener-output
