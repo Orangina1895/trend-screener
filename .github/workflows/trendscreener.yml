@@ -27,8 +27,9 @@ jobs:
           python trendscreener.py
           ls -la ${{ github.workspace }}
 
-      - name: Upload screener results
+          - name: Upload screener results
         uses: actions/upload-artifact@v4
         with:
           name: screener-output
-          path: ${{ github.workspace }}/*.xlsx
+          path: ${{ github.workspace }}
+          if-no-files-found: warn
