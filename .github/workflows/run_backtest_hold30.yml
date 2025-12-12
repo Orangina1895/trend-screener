@@ -21,3 +21,11 @@ jobs:
       - name: Run backtest
         run: |
           python backtest_from_trendscore_excel_hold30_FINAL.py
+
+      # 🔴 DAS HAT BIS JETZT GEFEHLT
+      - name: Upload backtest results
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: |
+            backtest_results_top15_hold30_*.xlsx
