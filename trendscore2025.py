@@ -8,7 +8,7 @@ from datetime import datetime
 # ============================================================
 
 START_DATE = "2022-12-23"
-END_DATE   = "2023-24-07"
+END_DATE   = "2023-12-07"
 
 OUTPUT_FILE = "trendscore2025_weekly_top30.xlsx"
 TOP_N_EXPORT = 30
