@@ -10,11 +10,11 @@ from datetime import datetime
 INPUT_EXCEL = "trendscore2025_weekly_top30.xlsx"
 SHEET_NAME  = "Weekly_Top30"
 
-TOP_N = 15
-HOLD_MAX_RANK = 30
+TOP_N = 12          # <<< NEU: 12 Positionen
+HOLD_MAX_RANK = 25  # <<< NEU: Exit ab Platz > 25
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUTPUT_XLSX = f"backtest_results_hold30_events_{timestamp}.xlsx"
+OUTPUT_XLSX = f"backtest_results_top12_hold25_{timestamp}.xlsx"
 
 # ============================================================
 # EXCEL LADEN
@@ -81,7 +81,7 @@ def price_on_or_after(ticker, date):
     return s.index[i], float(s.iloc[i])
 
 # ============================================================
-# BACKTEST – EVENT-LOG MIT EXIT-RENDITE
+# BACKTEST – EVENT-LOG
 # ============================================================
 
 equity = 1.0
@@ -119,7 +119,7 @@ def log_exit(ticker, date, price, score, entry_price):
     })
 
 # ----------------------------
-# Woche 1 – Initialkauf
+# Woche 1 – Initialkauf (Top 12)
 # ----------------------------
 w0 = weeks[0]
 m0 = week_maps[w0]
@@ -129,8 +129,10 @@ for t in m0["ordered"][:TOP_N]:
     d, px = price_on_or_after(t, w0)
     if px is None:
         continue
-    shares = alloc / px
-    holdings[t] = {"shares": shares, "entry_price": px}
+    holdings[t] = {
+        "shares": alloc / px,
+        "entry_price": px
+    }
     log_entry(t, d, px, m0["score"].get(t, np.nan))
 
 equity = mark_to_market(w0)
@@ -142,7 +144,7 @@ equity_curve.append({"Date": w0, "Equity": equity, "Holdings": len(holdings)})
 for w in weeks[1:]:
     m = week_maps[w]
 
-    # Exits: Rank > 30
+    # --- Exits: Rank > 25 ---
     for t in list(holdings.keys()):
         if m["rank"].get(t, 9999) > HOLD_MAX_RANK:
             d, px = price_on_or_after(t, w)
@@ -156,7 +158,7 @@ for w in weeks[1:]:
                 )
             holdings.pop(t)
 
-    # Nachkäufe
+    # --- Nachkäufe: wieder auf 12 auffüllen ---
     if len(holdings) < TOP_N:
         equity = mark_to_market(w)
         alloc = equity / TOP_N
@@ -165,7 +167,10 @@ for w in weeks[1:]:
                 d, px = price_on_or_after(t, w)
                 if px is None:
                     continue
-                holdings[t] = {"shares": alloc / px, "entry_price": px}
+                holdings[t] = {
+                    "shares": alloc / px,
+                    "entry_price": px
+                }
                 log_entry(t, d, px, m["score"].get(t, np.nan))
                 if len(holdings) == TOP_N:
                     break
