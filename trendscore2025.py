@@ -4,195 +4,171 @@ import yfinance as yf
 from datetime import datetime
 
 # ============================================================
-# KONFIG
+# KONFIGURATION
 # ============================================================
 
-INPUT_EXCEL = "trendscore2025_weekly_top30.xlsx"
-SHEET_NAME  = "Weekly_Top30"
+START_DATE = "2022-12-23"
+END_DATE   = "2023-24-07"
 
-TOP_N = 15
-HOLD_MAX_RANK = 30
-
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUTPUT_XLSX = f"backtest_results_hold30_events_{timestamp}.xlsx"
+OUTPUT_FILE = "trendscore2025_weekly_top30.xlsx"
+TOP_N_EXPORT = 30
 
 # ============================================================
-# EXCEL LADEN
+# TICKER-UNIVERSUM (AKTUALISIERT)
 # ============================================================
 
-df = pd.read_excel(INPUT_EXCEL, sheet_name=SHEET_NAME)
+TICKERS = sorted(list(set([
+    "AAPL","ABNB","ADBE","ADI","ADP","ADSK","AEP","AMAT","AMD","AMGN","AMZN",
+    "APP","ARM","ASML","AVGO","AZN","BIIB","BKNG","BKR","SWKS","CDNS","VRSN",
+    "CEG","CHTR","CMCSA","COST","CPRT","CRWD","CSCO","CSGP","CSX","CTAS",
+    "CTSH","NTES","DDOG","DXCM","EA","EBAY","EXC","FAST","FTNT","GEHC","GFS",
+    "GILD","GOOG","GOOGL","HON","IDXX","INTC","INTU","ISRG","KDP","KHC",
+    "KLAC","LIN","LRCX","LULU","MAR","MCHP","BIDU","MDLZ","MELI","META","MNST",
+    "MRVL","MSFT","MU","NFLX","NVDA","NXPI","ODFL","ON","ORLY","PANW",
+    "PAYX","PCAR","PDD","PEP","PYPL","QCOM","REGN","MTCH","ROST","SBUX",
+    "SHOP","SIRI","SNPS","TEAM","TMUS","TRI","TSLA","TTD","TTWO","TXN",
+    "VRSK","VRSN","VRTX","WBD","WDAY","XEL","ZS",
 
-required = {"WeekEnd", "Rank", "Ticker", "score"}
-if not required.issubset(df.columns):
-    raise ValueError(f"Excel muss enthalten: {required}")
+    # ➕ NEU
+    "ILMN","SMCI","MRNA"
+])))
 
-df["WeekEnd"] = pd.to_datetime(df["WeekEnd"])
-df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
-df["Rank"] = pd.to_numeric(df["Rank"], errors="coerce")
-df["score"] = pd.to_numeric(df["score"], errors="coerce")
+# ❌ ENTFERNT (bewusst nicht enthalten):
+# PLTR, MSTR, AXON
 
-df = df.dropna(subset=["WeekEnd", "Ticker", "Rank"])
-df = df.sort_values(["WeekEnd", "Rank"]).reset_index(drop=True)
-
-weeks = sorted(df["WeekEnd"].unique())
-if not weeks:
-    raise ValueError("Keine Wochen gefunden.")
-
-# Maps je Woche
-week_maps = {}
-for w in weeks:
-    wdf = df[df["WeekEnd"] == w]
-    week_maps[w] = {
-        "rank": dict(zip(wdf["Ticker"], wdf["Rank"].astype(int))),
-        "score": dict(zip(wdf["Ticker"], wdf["score"])),
-        "ordered": wdf["Ticker"].tolist()
-    }
+print(f"Ticker im Scan: {len(TICKERS)}")
 
 # ============================================================
-# PREISDATEN
+# DATEN LADEN
 # ============================================================
 
-tickers = sorted(df["Ticker"].unique().tolist())
-start_date = weeks[0].strftime("%Y-%m-%d")
-
-prices = yf.download(
-    tickers,
-    start=start_date,
+data = yf.download(
+    TICKERS,
+    start="2023-01-01",  # früher für saubere Indikatoren
+    end=END_DATE,
     auto_adjust=True,
-    progress=False
-)["Close"]
+    progress=False,
+    group_by="ticker"
+)
 
-if isinstance(prices, pd.Series):
-    prices = prices.to_frame()
+def extract(field):
+    return pd.DataFrame({t: data[t][field] for t in TICKERS if t in data})
 
-prices = prices.dropna(how="all")
-if prices.empty:
-    raise RuntimeError("Keine Kursdaten geladen.")
-
-def price_on_or_after(ticker, date):
-    if ticker not in prices.columns:
-        return None, None
-    s = prices[ticker].dropna()
-    if s.empty:
-        return None, None
-    i = s.index.searchsorted(date)
-    if i >= len(s):
-        return None, None
-    return s.index[i], float(s.iloc[i])
+closes = extract("Close")
+highs  = extract("High")
+lows   = extract("Low")
 
 # ============================================================
-# BACKTEST (EVENT-LOG)
+# HILFSFUNKTIONEN
 # ============================================================
 
-equity = 1.0
-holdings = {}   # ticker -> shares
-events = []     # ENTRY / EXIT Events
-equity_curve = []
+def compute_atr(high, low, close, window=20):
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=0).groupby(level=0).max()
+    return tr.rolling(window).mean()
 
-def mark_to_market(date):
-    total = 0.0
-    for t, shares in holdings.items():
-        _, px = price_on_or_after(t, date)
-        if px is not None:
-            total += shares * px
-    return total
+# ============================================================
+# WEEKLY TREND SCORE
+# ============================================================
 
-def log_entry(ticker, date, price, score):
-    events.append({
-        "Date": date,
-        "Ticker": ticker,
-        "Action": "ENTRY",
-        "Price": price,
-        "Score": score,
-        "EquityAfter": np.nan
-    })
+def compute_weekly_trend_score(w_closes, w_highs, w_lows, asof):
+    hist = w_closes.loc[:asof]
+    if len(hist) < 52:
+        return None
 
-def log_exit(ticker, date, price, score):
-    events.append({
-        "Date": date,
-        "Ticker": ticker,
-        "Action": "EXIT",
-        "Price": price,
-        "Score": score,
-        "EquityAfter": np.nan
-    })
+    last = hist.iloc[-1]
 
-# ----------------------------
-# Woche 1 – Initialkauf
-# ----------------------------
-w0 = weeks[0]
-m0 = week_maps[w0]
-alloc = equity / TOP_N
+    valid = hist.notna().tail(52).count() == 52
+    tickers = valid[valid].index.tolist()
+    if not tickers:
+        return None
 
-for t in m0["ordered"][:TOP_N]:
-    d, px = price_on_or_after(t, w0)
-    if px is None:
+    hist = hist[tickers]
+    last = last[tickers]
+
+    m6  = last / hist.iloc[-26] - 1
+    m12 = last / hist.iloc[-52] - 1
+
+    sma10 = hist.rolling(10).mean().iloc[-1]
+    sma20 = hist.rolling(20).mean().iloc[-1]
+    sma40 = hist.rolling(40).mean().iloc[-1]
+
+    atr10 = compute_atr(
+        w_highs[tickers], w_lows[tickers], hist, 10
+    ).iloc[-1]
+
+    sma_score = (
+        (last > sma10).astype(int) +
+        (last > sma20).astype(int) +
+        (last > sma40).astype(int) +
+        (sma10 > sma20).astype(int) +
+        (sma20 > sma40).astype(int)
+    ) / 5
+
+    vol_adj = m12 / (atr10 / last)
+
+    df = pd.DataFrame({
+        "M6": m6,
+        "M12": m12,
+        "SMA": sma_score,
+        "VA": vol_adj
+    }).dropna()
+
+    df["rM6"]  = df["M6"].rank(pct=True)
+    df["rM12"] = df["M12"].rank(pct=True)
+    df["rVA"]  = df["VA"].rank(pct=True)
+
+    df["score"] = (
+        0.33 * df["rM6"] +
+        0.33 * df["rM12"] +
+        0.20 * df["SMA"] +
+        0.14 * df["rVA"]
+    )
+
+    return df.sort_values("score", ascending=False)
+
+# ============================================================
+# WEEKLY LOOP
+# ============================================================
+
+w_closes = closes.resample("W-FRI").last()
+w_highs  = highs.resample("W-FRI").max()
+w_lows   = lows.resample("W-FRI").min()
+
+rows = []
+
+for d in w_closes.index:
+    if d < pd.to_datetime(START_DATE) or d > pd.to_datetime(END_DATE):
         continue
-    shares = alloc / px
-    holdings[t] = shares
-    log_entry(t, d, px, m0["score"].get(t, np.nan))
 
-equity = mark_to_market(w0)
-equity_curve.append({"Date": w0, "Equity": equity, "Holdings": len(holdings)})
+    score_df = compute_weekly_trend_score(w_closes, w_highs, w_lows, d)
+    if score_df is None:
+        continue
 
-# ----------------------------
-# Folgewochen
-# ----------------------------
-for w in weeks[1:]:
-    m = week_maps[w]
+    top = score_df.head(TOP_N_EXPORT)
 
-    # Exits: Rank > 30
-    for t in list(holdings.keys()):
-        if m["rank"].get(t, 9999) > HOLD_MAX_RANK:
-            d, px = price_on_or_after(t, w)
-            if px is not None:
-                log_exit(t, d, px, m["score"].get(t, np.nan))
-            holdings.pop(t)
-
-    # Nachkäufe
-    if len(holdings) < TOP_N:
-        equity = mark_to_market(w)
-        alloc = equity / TOP_N
-        for t in m["ordered"]:
-            if t not in holdings:
-                d, px = price_on_or_after(t, w)
-                if px is None:
-                    continue
-                holdings[t] = alloc / px
-                log_entry(t, d, px, m["score"].get(t, np.nan))
-                if len(holdings) == TOP_N:
-                    break
-
-    equity = mark_to_market(w)
-    equity_curve.append({"Date": w, "Equity": equity, "Holdings": len(holdings)})
-
-# ----------------------------
-# Alle offenen Positionen schließen (letzter Handelstag)
-# ----------------------------
-final_date = prices.index.max()
-
-for t in list(holdings.keys()):
-    d, px = price_on_or_after(t, final_date)
-    if px is not None:
-        log_exit(t, d, px, np.nan)
-
-holdings.clear()
-
-equity = mark_to_market(final_date)
-equity_curve.append({"Date": final_date, "Equity": equity, "Holdings": 0})
+    for rank, (ticker, row) in enumerate(top.iterrows(), start=1):
+        rows.append({
+            "WeekEnd": d,
+            "Rank": rank,
+            "Ticker": ticker,
+            "score": row["score"],
+            "M6": row["M6"],
+            "M12": row["M12"],
+            "SMA": row["SMA"],
+            "VA": row["VA"]
+        })
 
 # ============================================================
 # EXPORT
 # ============================================================
 
-events_df = pd.DataFrame(events).sort_values("Date").reset_index(drop=True)
-equity_df = pd.DataFrame(equity_curve)
+out = pd.DataFrame(rows)
+out.sort_values(["WeekEnd", "Rank"], inplace=True)
 
-with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as writer:
-    events_df.to_excel(writer, sheet_name="TradeEvents", index=False)
-    equity_df.to_excel(writer, sheet_name="EquityCurve", index=False)
-
-print("=== BACKTEST FERTIG ===")
-print(f"Datei: {OUTPUT_XLSX}")
-print(f"Events: {len(events_df)}")
-print(f"Final Equity: {equity:.4f}")
+out.to_excel(OUTPUT_FILE, index=False)
+print(f"Excel erstellt: {OUTPUT_FILE}")
