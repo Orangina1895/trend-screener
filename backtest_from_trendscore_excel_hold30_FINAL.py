@@ -81,20 +81,20 @@ def price_on_or_after(ticker, date):
     return s.index[i], float(s.iloc[i])
 
 # ============================================================
-# BACKTEST (EVENT-LOG)
+# BACKTEST – EVENT-LOG MIT EXIT-RENDITE
 # ============================================================
 
 equity = 1.0
-holdings = {}   # ticker -> shares
-events = []     # ENTRY / EXIT Events
+holdings = {}   # ticker -> {"shares", "entry_price"}
+events = []
 equity_curve = []
 
 def mark_to_market(date):
     total = 0.0
-    for t, shares in holdings.items():
+    for t, pos in holdings.items():
         _, px = price_on_or_after(t, date)
         if px is not None:
-            total += shares * px
+            total += pos["shares"] * px
     return total
 
 def log_entry(ticker, date, price, score):
@@ -104,17 +104,18 @@ def log_entry(ticker, date, price, score):
         "Action": "ENTRY",
         "Price": price,
         "Score": score,
-        "EquityAfter": np.nan
+        "TradeReturn_%": np.nan
     })
 
-def log_exit(ticker, date, price, score):
+def log_exit(ticker, date, price, score, entry_price):
+    trade_return = (price / entry_price - 1) * 100 if entry_price > 0 else np.nan
     events.append({
         "Date": date,
         "Ticker": ticker,
         "Action": "EXIT",
         "Price": price,
         "Score": score,
-        "EquityAfter": np.nan
+        "TradeReturn_%": trade_return
     })
 
 # ----------------------------
@@ -129,7 +130,7 @@ for t in m0["ordered"][:TOP_N]:
     if px is None:
         continue
     shares = alloc / px
-    holdings[t] = shares
+    holdings[t] = {"shares": shares, "entry_price": px}
     log_entry(t, d, px, m0["score"].get(t, np.nan))
 
 equity = mark_to_market(w0)
@@ -146,7 +147,13 @@ for w in weeks[1:]:
         if m["rank"].get(t, 9999) > HOLD_MAX_RANK:
             d, px = price_on_or_after(t, w)
             if px is not None:
-                log_exit(t, d, px, m["score"].get(t, np.nan))
+                log_exit(
+                    ticker=t,
+                    date=d,
+                    price=px,
+                    score=m["score"].get(t, np.nan),
+                    entry_price=holdings[t]["entry_price"]
+                )
             holdings.pop(t)
 
     # Nachkäufe
@@ -158,7 +165,7 @@ for w in weeks[1:]:
                 d, px = price_on_or_after(t, w)
                 if px is None:
                     continue
-                holdings[t] = alloc / px
+                holdings[t] = {"shares": alloc / px, "entry_price": px}
                 log_entry(t, d, px, m["score"].get(t, np.nan))
                 if len(holdings) == TOP_N:
                     break
@@ -174,7 +181,13 @@ final_date = prices.index.max()
 for t in list(holdings.keys()):
     d, px = price_on_or_after(t, final_date)
     if px is not None:
-        log_exit(t, d, px, np.nan)
+        log_exit(
+            ticker=t,
+            date=d,
+            price=px,
+            score=np.nan,
+            entry_price=holdings[t]["entry_price"]
+        )
 
 holdings.clear()
 
