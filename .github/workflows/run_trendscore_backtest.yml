@@ -29,10 +29,6 @@ jobs:
         run: |
           python trendscore2025.py
 
-      - name: Run Backtest
-        run: |
-          python backtest_from_trendscore_excel_hold30_FINAL.py
-
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
