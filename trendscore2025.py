@@ -1,23 +1,23 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
 
 # ============================================================
 # KONFIGURATION
 # ============================================================
 
-START_DATE = "2022-12-23"
-END_DATE   = "2023-12-07"
+DATA_START = "2021-01-01"      # nötig für 52-Wochen-Indikatoren
+START_DATE = "2022-12-23"      # Auswertungsbeginn
+END_DATE   = "2023-12-24"      # Auswertungsende
 
 OUTPUT_FILE = "trendscore2025_weekly_top30.xlsx"
 TOP_N_EXPORT = 30
 
 # ============================================================
-# TICKER-UNIVERSUM (AKTUALISIERT)
+# TICKER-UNIVERSUM
 # ============================================================
 
-TICKERS = sorted(list(set([
+TICKERS = sorted(set([
     "AAPL","ABNB","ADBE","ADI","ADP","ADSK","AEP","AMAT","AMD","AMGN","AMZN",
     "APP","ARM","ASML","AVGO","AZN","BIIB","BKNG","BKR","SWKS","CDNS","VRSN",
     "CEG","CHTR","CMCSA","COST","CPRT","CRWD","CSCO","CSGP","CSX","CTAS",
@@ -28,13 +28,8 @@ TICKERS = sorted(list(set([
     "PAYX","PCAR","PDD","PEP","PYPL","QCOM","REGN","MTCH","ROST","SBUX",
     "SHOP","SIRI","SNPS","TEAM","TMUS","TRI","TSLA","TTD","TTWO","TXN",
     "VRSK","VRSN","VRTX","WBD","WDAY","XEL","ZS",
-
-    # ➕ NEU
     "ILMN","SMCI","MRNA"
-])))
-
-# ❌ ENTFERNT (bewusst nicht enthalten):
-# PLTR, MSTR, AXON
+]))
 
 print(f"Ticker im Scan: {len(TICKERS)}")
 
@@ -44,7 +39,7 @@ print(f"Ticker im Scan: {len(TICKERS)}")
 
 data = yf.download(
     TICKERS,
-    start="2023-01-01",  # früher für saubere Indikatoren
+    start=DATA_START,
     end=END_DATE,
     auto_adjust=True,
     progress=False,
@@ -52,17 +47,21 @@ data = yf.download(
 )
 
 def extract(field):
-    return pd.DataFrame({t: data[t][field] for t in TICKERS if t in data})
+    return pd.DataFrame({
+        t: data[t][field]
+        for t in TICKERS
+        if t in data and field in data[t]
+    })
 
 closes = extract("Close")
 highs  = extract("High")
 lows   = extract("Low")
 
 # ============================================================
-# HILFSFUNKTIONEN
+# ATR
 # ============================================================
 
-def compute_atr(high, low, close, window=20):
+def compute_atr(high, low, close, window=10):
     prev_close = close.shift(1)
     tr = pd.concat([
         high - low,
@@ -77,10 +76,9 @@ def compute_atr(high, low, close, window=20):
 
 def compute_weekly_trend_score(w_closes, w_highs, w_lows, asof):
     hist = w_closes.loc[:asof]
+
     if len(hist) < 52:
         return None
-
-    last = hist.iloc[-1]
 
     valid = hist.notna().tail(52).count() == 52
     tickers = valid[valid].index.tolist()
@@ -88,7 +86,7 @@ def compute_weekly_trend_score(w_closes, w_highs, w_lows, asof):
         return None
 
     hist = hist[tickers]
-    last = last[tickers]
+    last = hist.iloc[-1]
 
     m6  = last / hist.iloc[-26] - 1
     m12 = last / hist.iloc[-52] - 1
@@ -117,6 +115,9 @@ def compute_weekly_trend_score(w_closes, w_highs, w_lows, asof):
         "SMA": sma_score,
         "VA": vol_adj
     }).dropna()
+
+    if df.empty:
+        return None
 
     df["rM6"]  = df["M6"].rank(pct=True)
     df["rM12"] = df["M12"].rank(pct=True)
@@ -149,14 +150,12 @@ for d in w_closes.index:
     if score_df is None:
         continue
 
-    top = score_df.head(TOP_N_EXPORT)
-
-    for rank, (ticker, row) in enumerate(top.iterrows(), start=1):
+    for rank, (ticker, row) in enumerate(score_df.head(TOP_N_EXPORT).iterrows(), start=1):
         rows.append({
             "WeekEnd": d,
             "Rank": rank,
             "Ticker": ticker,
-            "score": row["score"],
+            "Score": row["score"],
             "M6": row["M6"],
             "M12": row["M12"],
             "SMA": row["SMA"],
@@ -167,8 +166,13 @@ for d in w_closes.index:
 # EXPORT
 # ============================================================
 
-out = pd.DataFrame(rows)
-out.sort_values(["WeekEnd", "Rank"], inplace=True)
+if not rows:
+    raise RuntimeError(
+        "❌ Keine TrendScores berechnet.\n"
+        "Zeitraum zu kurz für 52-Wochen-Indikatoren."
+    )
 
+out = pd.DataFrame(rows).sort_values(["WeekEnd", "Rank"])
 out.to_excel(OUTPUT_FILE, index=False)
-print(f"Excel erstellt: {OUTPUT_FILE}")
+
+print(f"✅ Excel erstellt: {OUTPUT_FILE}")
