@@ -20,7 +20,7 @@ OUTPUT_XLSX = f"backtest_results_top15_hold30_{timestamp}.xlsx"
 # EXCEL LADEN
 # ============================================================
 
-df = pd.read_excel(INPUT_EXCEL, sheet_name=SHEET_NAME)
+df = pd.read_excel(INPUT_EXCEL, sheet_name=0)  # erstes Sheet automatisch
 df["WeekEnd"] = pd.to_datetime(df["WeekEnd"])
 df["Ticker"]  = df["Ticker"].astype(str).str.upper()
 df["Rank"]    = df["Rank"].astype(int)
